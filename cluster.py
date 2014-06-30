@@ -35,15 +35,21 @@ def expander(mo):
 def exceptcatcher(type,value,traceback):
     print "\nHalted."
 
-def createscript():
-    script = open('clusterscript.s','w')
-    return script
-
 # Write final cluster cmds to bottom of script file
-def finalfooter(numcmds,script):
+def writescript(numcmds,scripts):
+
     footer = "\nWait4Files Files="
-    for x in range(1,numcmds+1):
-        footer += "CHAMP"+str(x)+".script.end,"
+
+    # write it now
+    script = open('clusterscript.s','w')
+    for nodenum in sorted(numcmds.keys()):
+        script.write(scripts[nodenum])
+        
+        if len(numcmds[nodenum])>0:
+            # output multistep footer
+            script.write("\nEndDistributeMultistep\n\n")
+            footer += "CHAMP"+str(nodenum)+".script.end,"
+            
     footer += " deldistribfiles=t,CheckReturnCode=t\n"
 
     script.write(footer)
@@ -54,30 +60,50 @@ def parseline(line, script, numcmds, COMMPATH):
     # replace env variables
     line = re_env.sub(expander, line)
 
-    # write multistep header (using COMMPATH)
-    hdrtext = "DistributeMultistep ProcessID=\"CHAMP\",ProcessNum="+str(numcmds)+", CommPath='"+COMMPATH+"'\n"
-    script.write(hdrtext)
+    # find the nodenum we'll use for the script
+    mynodenum = 1
+    numscripts = 9999
+    for nodenum in sorted(numcmds.keys()):
+        if len(numcmds[nodenum]) < numscripts:
+            numscripts = len(numcmds[nodenum])
+            mynodenum = nodenum
+    # add it
+    numcmds[mynodenum].append(line)
+            
+    # write multistep header (using COMMPATH) if no other scripts yet
+    if numscripts == 0:
+        scripts[mynodenum] += "DistributeMultistep ProcessID=\"CHAMP\",ProcessNum=%d, CommPath='%s'\n" % (mynodenum, COMMPATH)
 
     # read/output file contents
-    script.write("; **DISPATCHER: reading "+line+"\n")
+    scripts[mynodenum] += "\n; **DISPATCHER: reading "+line+"\n"
 
     try:
         with open(line) as f:
             for cmd in f:
-              # lmz addition
+            	# lmz addition
             	cmd = re_env.sub(expander, cmd)
-                script.write(cmd)
+                scripts[mynodenum] += cmd
     except:
         print "ERROR: couldn't read",line
         raw_input("\n*** PRESS CTRL-C to quit. ***")
 
-    # output multistep footer
-    script.write("\nEndDistributeMultistep\n\n")
+    # don't output multistep footer -- we'll do this later
     return
 
 # Now call the runtpp command!
 def callcluster(numcmds,jset=""):
-    print time.asctime()+":  Calling cluster with",numcmds,"command(s)"
+    min_cmds = 9999
+    max_cmds = 0
+    num_nodes= 0
+    num_scripts= 0
+    for nodenum in sorted(numcmds.keys()):
+        min_cmds = min(min_cmds, len(numcmds[nodenum]))
+        max_cmds = max(max_cmds, len(numcmds[nodenum]))
+        num_nodes += 1 if (len(numcmds[nodenum]) > 0) else 0
+        num_scripts += len(numcmds[nodenum])
+        
+    print time.asctime()+":  Calling cluster with %d commands (%s each) on %d nodes" % \
+        (num_scripts, "%d - %d" % (min_cmds, max_cmds) if min_cmds != max_cmds else "%d" % min_cmds, num_nodes)
     rtncode = 11
 
     outlog = open('clusterscript.log','a')
@@ -85,7 +111,7 @@ def callcluster(numcmds,jset=""):
     outlog.flush()
     
     try:
-        rtncode = subprocess.call(["runtpp.exe",'clusterscript.s'], stdout=outlog, stderr=outlog)
+        rtncode = subprocess.call(["runtpp.exe",'clusterscript.s'], stdout=outlog, stderr=outlog, shell=True)
     except:
         print "Couldn't spawn runtpp.exe; is it installed?"
     
@@ -110,18 +136,22 @@ if (__name__ == "__main__"):
 
     # sys.excepthook = exceptcatcher  # remove this to get tracebacks on errors!!
 
-    # create/overwrite new file dispatchscript.s
-    script = createscript()
+    # will map nodenum -> [ list of script txt ]
+    scripts = {}
 
     # open jset file from cmdline
     jset = re_env.sub(expander, sys.argv[1])
     print   "\n------- Reading",jset,"--------"
-    numcmds = 0
+    
+    # will map nodenum -> [ list of script names ]
+    numcmds = {}
+    for nodenum in range(1,NODES+1):
+        scripts[nodenum]  = ""
+        numcmds[nodenum] = []
 
     # If argument is not a .jset script, send it on its way directly
     if (False == jset.endswith(".jset")):
-        numcmds += 1
-        parseline(jset,script,numcmds,COMMPATH)
+        parseline(jset,scripts,numcmds,COMMPATH)
 
     # Otherwise, assume it's a jset that needs to be processed
     else:
@@ -134,19 +164,8 @@ if (__name__ == "__main__"):
                     # truncate runtpp keyword if it's there
                     if (line.find("runtpp ")==0):
                         line = line[7:]
-                    numcmds+=1
-                    parseline(line,script,numcmds,COMMPATH)
+                    parseline(line,scripts,numcmds,COMMPATH)
 
-                    # if we've filled up all our nodes, then spawn a process.
-                    if (numcmds >= NODES): # time to spawn!
-                        finalfooter(numcmds,script)
-                        script.close()
-                        callcluster(numcmds)
-                        numcmds = 0
-                        script = createscript()
-
-    # Write multistep closing-block (using COMMPATH and NODES)
-    if (numcmds > 0):
-        finalfooter(numcmds,script)
-        script.close()
-        callcluster(numcmds,jset)
+    # time to spawn!
+    writescript(numcmds,scripts)
+    callcluster(numcmds)

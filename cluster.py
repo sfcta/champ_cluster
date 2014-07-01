@@ -2,7 +2,7 @@
 
   http://github.com/sfcta/cluster
 
-  Timesheet, Copyright 2013 San Francisco County Transportation Authority
+  Cluster, Copyright 2014 San Francisco County Transportation Authority
                             San Francisco, CA, USA
                             http://www.sfcta.org/
                             info@sfcta.org
@@ -14,7 +14,7 @@
   the Free Software Foundation, either version 3 of the License, or
   (at your option) any later version.
 
-  Timesheet is distributed in the hope that it will be useful,
+  Cluster is distributed in the hope that it will be useful,
   but WITHOUT ANY WARRANTY; without even the implied warranty of
   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
   GNU General Public License for more details.
@@ -56,18 +56,12 @@ def writescript(numcmds,scripts):
     return
 
 # Take a line from a jobset file, and build the script file from it
-def parseline(line, script, numcmds, COMMPATH):
+def parseline(line, script, numcmds, COMMPATH, mynodenum):
     # replace env variables
     line = re_env.sub(expander, line)
 
-    # find the nodenum we'll use for the script
-    mynodenum = 1
-    numscripts = 9999
-    for nodenum in sorted(numcmds.keys()):
-        if len(numcmds[nodenum]) < numscripts:
-            numscripts = len(numcmds[nodenum])
-            mynodenum = nodenum
     # add it
+    numscripts = len(numcmds[mynodenum])
     numcmds[mynodenum].append(line)
             
     # write multistep header (using COMMPATH) if no other scripts yet
@@ -91,7 +85,7 @@ def parseline(line, script, numcmds, COMMPATH):
     return
 
 # Now call the runtpp command!
-def callcluster(numcmds,jset=""):
+def callcluster(numcmds,jset="",grouped_jset=False):
     min_cmds = 9999
     max_cmds = 0
     num_nodes= 0
@@ -102,8 +96,10 @@ def callcluster(numcmds,jset=""):
         num_nodes += 1 if (len(numcmds[nodenum]) > 0) else 0
         num_scripts += len(numcmds[nodenum])
         
-    print time.asctime()+":  Calling cluster with %d commands (%s each) on %d nodes" % \
-        (num_scripts, "%d - %d" % (min_cmds, max_cmds) if min_cmds != max_cmds else "%d" % min_cmds, num_nodes)
+    print time.asctime()+":  Calling cluster with %d %scommands (%s each) on %d nodes" % \
+        (num_scripts, "grouped " if grouped_jset else "",
+         "%d - %d" % (min_cmds, max_cmds) if min_cmds != max_cmds else "%d" % min_cmds, 
+         num_nodes)
     rtncode = 11
 
     outlog = open('clusterscript.log','a')
@@ -144,28 +140,44 @@ if (__name__ == "__main__"):
     print   "\n------- Reading",jset,"--------"
     
     # will map nodenum -> [ list of script names ]
+    grouped_jset = False
     numcmds = {}
     for nodenum in range(1,NODES+1):
         scripts[nodenum]  = ""
         numcmds[nodenum] = []
 
     # If argument is not a .jset script, send it on its way directly
-    if (False == jset.endswith(".jset")):
+    if (not jset.endswith(".jset") and not jset.endswith(".gjset")):
         parseline(jset,scripts,numcmds,COMMPATH)
 
     # Otherwise, assume it's a jset that needs to be processed
     else:
+        if jset.endswith(".gjset"): 
+            grouped_jset = True
+        mynodenum = 1
+        
         # Read each line in the jset file and process it
         with open(jset,"r") as jsetfile:
             for line in jsetfile:
                 # skip if it's just whitespace
                 line = line.strip()
-                if len(line)>0:
+                
+                # blank line for grouped jset means we can go to the next node
+                if len(line)==0 and grouped_jset:
+                    mynodenum += 1
+                    if mynodenum > NODES: mynodenum = 1
+                      
+                if len(line)>0:                                    
                     # truncate runtpp keyword if it's there
                     if (line.find("runtpp ")==0):
                         line = line[7:]
-                    parseline(line,scripts,numcmds,COMMPATH)
+                    parseline(line,scripts,numcmds,COMMPATH,mynodenum)
+                    
+                    # not-grouped jset: go to next node automatically
+                    if not grouped_jset:
+                        mynodenum += 1
+                        if mynodenum > NODES: mynodenum = 1
 
     # time to spawn!
     writescript(numcmds,scripts)
-    callcluster(numcmds)
+    callcluster(numcmds,jset,grouped_jset)

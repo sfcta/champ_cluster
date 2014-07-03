@@ -148,7 +148,7 @@ if (__name__ == "__main__"):
 
     # If argument is not a .jset script, send it on its way directly
     if (not jset.endswith(".jset") and not jset.endswith(".gjset")):
-        parseline(jset,scripts,numcmds,COMMPATH)
+        parseline(jset,scripts,numcmds,COMMPATH,1)
 
     # Otherwise, assume it's a jset that needs to be processed
     else:
